@@ -1,0 +1,42 @@
+# Select the 'n' strongest peaks from a MACS2 output file
+get_sel_peaks <- function(file, n = 1e4, chroms_to_use = chroms){
+  # load narrowPeak file
+  peaks <- read.delim(file, header = FALSE)
+  
+  # filter out peaks not on selected chromosomes
+  peaks <- peaks[peaks[, 1] %in% chroms_to_use, ]
+  
+  # order by decreasing signalValue (V7)
+  peaks <- peaks[order(peaks[, 7], decreasing = TRUE), ]
+  
+  # return n highest enriched peaks
+  return(peaks[1:n, ])
+}
+
+# Visualise stripe enrichment based on an ARA GENOVA object
+visualise.stripe_enrichment <- function(ara, log = FALSE, span = 0.75, xlims = NULL, palette = NULL){
+  require(ggplot2)
+  df <- data.frame(sample = character(), pos = numeric(), obsexp = numeric())
+  for (i in seq_len(dim(ara$obsexp)[3])){
+    name <- dimnames(ara$obsexp)[[3]][i]
+    val <- ara$obsexp[,,i]['0', ]
+    dat <- data.frame(sample = name, pos = abs(as.numeric(names(val))), obsexp = val)
+    df <- rbind(df, dat)
+  }
+  g <- ggplot(df, aes(x = pos/1e3, y = obsexp, color = sample)) +
+    geom_point(alpha = 0.2) +
+    geom_smooth(span = span) +
+    geom_hline(yintercept = 1, linetype = 'dashed') +
+    labs(x = 'Distance (kb)', y = 'Stripe enrichment (Obs/Exp)', title = 'Stripe length', color = 'Cell line') +
+    theme_bw() 
+  if (log){
+    g <- g + scale_x_log10() + xlab('Distance (kb)') + annotation_logticks()
+  }
+  if (!is.null(xlims)){
+    g <- g + xlim(xlims)
+  }
+  if (!is.null(palette)){
+    g <- g + scale_colour_manual(palette)
+  }
+  g  
+}
