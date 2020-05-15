@@ -1,0 +1,198 @@
+APA <- function(explist, bedpe, stratify = NULL,
+                dist_thres = NULL, shift = 1e6,
+                size_bin = NULL, size_bp = NULL,
+                outlier_filter = c(0, 0.995),
+                anchors = NULL, raw = TRUE) {
+  # Verify experiment compatability
+  explist <- GENOVA:::check_compat_exp(explist)
+  
+  # Initialise parameters
+  res <- attr(explist[[1]], "res")
+  rel_pos <- GENOVA:::parse_rel_pos(res, size_bin, size_bp)
+  
+  if (is.null(dist_thres)) {
+    dist_thres <- c((diff(range(rel_pos)) + 3) * res, Inf)
+  }
+  
+  if (is.null(anchors)) {
+    if(!is.null(stratify)){
+      # Calculate anchors stratified by group
+      anchors_raw <- split(bedpe, stratify)
+      anchors <- lapply(anchors_raw, anchors_APA, IDX=explist[[1]]$IDX, res=res, dist_thres=dist_thres)
+      anchors <- anchors[lapply(anchors, nrow) != 0]
+      
+      results <- lapply(anchors, rep_mat_lookup, 
+                        explist=explist, rel_pos = rel_pos, shift = 0, 
+                        outlier_filter = outlier_filter, raw = raw)
+      lapply(results, structure, class = c("APA_discovery", "ARMLA_discovery"),
+             resolution = res, package = "GENOVA")
+      
+    }else{
+      # Do normal APA
+      anchors <- anchors_APA(
+        explist[[1]]$IDX,
+        res,
+        bedpe,
+        dist_thres)
+      
+      results <- rep_mat_lookup(explist, anchors,
+                                rel_pos = rel_pos,
+                                shift = 0, outlier_filter = outlier_filter,
+                                raw = raw)
+      
+      structure(results, class = c("APA_discovery", "ARMLA_discovery"),
+                resolution = res, package = "GENOVA")
+    }
+  }
+}
+
+visualise.ARMLA_stratified <- function(disclist, contrast = NULL, 
+                                       metric = c("lfc", "diff"), ...) {
+  metric <- match.arg(metric)
+  showcontrast <- !is.null(contrast) && dim(disclist[[1]]$signal)[3] > 1L
+  
+  # Loop over strata
+  results <- data.frame()
+  for (i in seq_along(disclist)){
+    mats <- disclist[[i]]$signal
+    
+    # Format dimnames if missing
+    dims <- dim(mats)
+    names_dims <- dimnames(mats)
+    names_dims <- lapply(seq_along(dims), function(i) {
+      if (is.null(names_dims[[i]])) {
+        return(seq_len(dims[i]))
+      } else {
+        return(names_dims[[i]])
+      }
+    })
+    
+    # Setup coordinates
+    coords <- data.frame(
+      x = as.numeric(names_dims[[2]][as.vector(col(mats[,,1]))]),
+      y = as.numeric(names_dims[[1]][as.vector(row(mats[,,1]))])
+    )
+    
+    # Fill coordinates with experiment data
+    # Either with contact data or contrast if supplied
+    if (showcontrast) {
+      contrast_data <- as.vector(mats[,,contrast])
+      contrast_data <- switch(
+        metric,
+        "diff" = as.vector(mats) - rep(contrast_data, dims[3]),
+        "lfc"  = log2(as.vector(mats) / rep(contrast_data, dims[3]))
+      )
+      dim(contrast_data) <- dim(mats)
+      contrast_name <- switch(metric,
+                              "diff" = "Difference",
+                              "lfc" = "Change")
+      contrast_data <- lapply(seq_len(dims[3]), function(x) {
+        cbind.data.frame(coords,
+                         name = names_dims[[3]][x],
+                         strata = names(disclist)[i],
+                         mode = contrast_name,
+                         value = as.vector(contrast_data[,,x]))
+      })
+      contrast_data <- do.call(rbind, contrast_data)
+      results <- rbind(results, contrast_data)
+    }else{
+      df <- lapply(seq_len(dims[3]), function(x) {
+        cbind.data.frame(coords,
+                         name = names_dims[[3]][x],
+                         strata = names(disclist)[i],
+                         value = as.vector(mats[,,x]))
+      })
+      df <- do.call(rbind, df)
+      results <- rbind(results, df)
+    }
+  }
+  
+  # Setup base of plot
+  g <- ggplot2::ggplot(results, ggplot2::aes(x, y)) 
+  
+  # Add the plots
+  g <- g + ggplot2::geom_raster(ggplot2::aes(fill = value))
+  
+  # Seporate per strata and sample
+  g <- g + ggplot2::facet_grid(strata~name)
+  
+  # Add fancy-ness
+  g <- g + ggplot2::theme(
+    aspect.ratio = 1,
+    strip.placement = "outside",
+    strip.background = ggplot2::element_blank(),
+    panel.border = ggplot2::element_rect(fill = NA, colour = "grey30")
+  )
+  
+  return(g)
+}
+
+visualise.APA_stratified <- function(disclist, title = NULL, contrast = NULL,
+                                     metric = c("lfc", "diff"), 
+                                     colour_lim = NULL, colour_lim_contrast = NULL, 
+                                     ...) {
+  metric <- match.arg(metric)
+  
+  # Decide on limits
+  if (is.null(colour_lim)) {
+    colour_lim <- c(NA, NA)
+  }
+  if (is.null(colour_lim_contrast)) {
+    colour_lim_contrast <- GENOVA:::centered_limits()
+  }
+  
+  # Get a default plot
+  g <- visualise.ARMLA_stratified(disclist = disclist, 
+                                  contrast = contrast,
+                                  metric = metric)
+  
+  # Add fancy-ness
+  pos_breaks <- function(x) {
+    x <- scales::extended_breaks()(x)
+    if (length(x) > 3) head(tail(x, -1), -1) else x
+  }
+  
+  showcontrast <- !is.null(contrast) && dim(disclist[[1]]$signal)[3] > 1L
+  if(showcontrast){
+    g <- g + ggplot2::scale_fill_gradientn(
+      colours = c("#009BEF", "#7FCDF7", "#FFFFFF", "#FFADA3", "#FF5C49"),
+      guide = ggplot2::guide_colourbar(order = 1),
+      name = switch (metric,
+                     "diff" = "Difference",
+                     "lfc" = expression(atop("Log"[2]*" Fold", "Change"))
+      ),
+      oob = scales::squish,
+      limits = colour_lim_contrast
+    )
+  }else{
+    g <- g + ggplot2::scale_fill_gradientn(
+      colours = c('white', '#f5a623', '#d0021b', 'black'),
+      guide = ggplot2::guide_colourbar(order = 1),
+      name = expression(mu*" Contacts"),
+      limits = colour_lim,
+      oob = scales::squish
+    )
+  }
+  
+  g <- g + ggplot2::scale_x_continuous(
+    name = "",
+    expand = c(0, 0),
+    breaks = pos_breaks,
+    labels = function(x) {
+      ifelse(x == 0, "3'", paste0(x / 1000, "kb"))
+    }
+  ) +
+    ggplot2::scale_y_continuous(
+      name = "",
+      expand = c(0, 0),
+      breaks = pos_breaks,
+      labels = function(x) {
+        ifelse(x == 0, "5'", paste0(x / 1000, "kb"))
+      }
+    )
+  
+  if(!is.null(title)){
+    g = g + ggplot2::ggtitle(title)
+  }
+  g
+}
